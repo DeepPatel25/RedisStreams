@@ -13,8 +13,7 @@ namespace MasterRedisAPI.Controller
     /// This controller supports stream publishing, consumer group management,
     /// message pulling, acknowledgment, deletion, and cleanup of expired entries.
     /// </remarks>
-    [ApiController]
-    [Route("api/[controller]")]
+    [ApiController, Route("api/[controller]")]
     public class CLRedisController : ControllerBase
     {
         #region Private Fields
@@ -265,6 +264,152 @@ namespace MasterRedisAPI.Controller
 
             response.Message = "Expired stream entries cleaned successfully.";
             return Ok(response);
+        }
+
+        /// <summary>
+        /// Adds a new Redis stream entry (for testing purposes).
+        /// </summary>
+        /// <param name="redisStreamAddDTO">Redis stream add DTO.</param>
+        /// <returns></returns>
+        /// <response code="200">Stream entry added successfully.</response>
+        [HttpPost("AddStreamEntry")]
+        public async Task<IActionResult> Post(RedisStreamAddDTO redisStreamAddDTO)
+        {
+            try
+            {
+                long expiryTimeUtc = DateTimeOffset.UtcNow.AddMinutes(5).ToUnixTimeSeconds();
+
+                switch (redisStreamAddDTO.RedisOperation)
+                {
+                    // 🔴 Add new cache entry and stream message
+                    case EnmRedisOperation.Add:
+                        await CacheManager.Cache.SetAsync(
+                            redisStreamAddDTO.SessionId,
+                            redisStreamAddDTO.JSONValue,
+                            TimeSpan.FromMinutes(redisStreamAddDTO.SessionTime)
+                        );
+
+                        await AddSessionIdValueToStreamAsync(redisStreamAddDTO);
+                        break;
+
+                    // 🔴 Remove cache entry by key
+                    case EnmRedisOperation.Remove:
+                        await CacheManager.Cache.RemoveKeyAsync(redisStreamAddDTO.SessionId);
+                        await RemoveSessionIdValueFromStreamAsync(redisStreamAddDTO.SessionId);
+
+                        break;
+
+                    // 🔴 Update TTL of existing cache entry
+                    case EnmRedisOperation.UpdateTTL:
+                        await CacheManager.Cache.UpdateExpiryAsync(
+                            redisStreamAddDTO.HashSessionId,
+                            TimeSpan.FromMinutes(redisStreamAddDTO.SessionTime)
+                        );
+
+                        await AddSessionIdValueToStreamAsync(redisStreamAddDTO);
+                        break;
+
+                    // 🔴 Add or update specific field in hash
+                    case EnmRedisOperation.HashAdd:
+                        await CacheManager.Cache.AddHashKeyAsync(
+                            redisStreamAddDTO.HashSessionId,
+                            redisStreamAddDTO.SessionId,
+                            redisStreamAddDTO.JSONValue
+                        );
+
+                        await AddSessionIdValueToStreamAsync(redisStreamAddDTO);
+                        break;
+
+                    // 🔴 Remove specific field from hash
+                    case EnmRedisOperation.HashRemove:
+                        await CacheManager.Cache.RemoveHashKeyAsync(
+                            redisStreamAddDTO.HashSessionId,
+                            redisStreamAddDTO.SessionId
+                        );
+
+                        await RemoveSessionIdValueFromStreamAsync(redisStreamAddDTO.SessionId);
+                        break;
+
+                    default:
+                        throw new ArgumentOutOfRangeException(
+                            "Specify which operation to perform."
+                        );
+                }
+
+                response.Message = "Operation completed successfully.";
+            }
+            catch (Exception ex)
+            {
+                response.IsError = true;
+                response.Message = ex.Message;
+                return Ok(response);
+            }
+
+            return Ok(response);
+        }
+
+        #endregion
+
+        #region Private Methods
+
+        /// <summary>
+        /// Adds a session ID and its associated value to the Redis stream.
+        /// </summary>
+        /// <param name="redisStreamAddDTO">Redis stream add DTO.</param>
+        /// <returns></returns>
+        private static async Task AddSessionIdValueToStreamAsync(
+            RedisStreamAddDTO redisStreamAddDTO
+        )
+        {
+            NameValueEntry[] entries =
+            [
+                new("SessionId", redisStreamAddDTO.SessionId),
+                new(
+                    "ExpiryTimeUtc",
+                    DateTimeOffset
+                        .UtcNow.AddMinutes(redisStreamAddDTO.SessionTime)
+                        .ToUnixTimeSeconds()
+                ),
+                new("Value", redisStreamAddDTO.JSONValue),
+            ];
+
+            _ = await CacheManager.Cache.AddToStreamAsync(entries, StreamKey);
+        }
+
+        /// <summary>
+        /// Removes all stream entries associated with a specific session ID.
+        /// </summary>
+        /// <param name="sessionId">Session ID to remove from stream.</param>
+        /// <returns></returns>
+        private static async Task RemoveSessionIdValueFromStreamAsync(string sessionId)
+        {
+            string lastId = "0-0";
+            while (true)
+            {
+                StreamEntry[] entries = await CacheManager.Cache.GetStreamEntriesAsync(
+                    StreamKey,
+                    lastId,
+                    count: 100
+                );
+
+                if (entries.Length == 0)
+                    break;
+
+                foreach (StreamEntry entry in entries)
+                {
+                    lastId = entry.Id;
+
+                    RedisValue sessionIdValue = entry
+                        .Values.FirstOrDefault(v => v.Name == "SessionId")
+                        .Value;
+
+                    if (!sessionIdValue.HasValue || sessionIdValue.ToString() != sessionId)
+                        continue;
+
+                    // 🔴 Matching entry → delete
+                    _ = await CacheManager.Cache.DeleteMessagesAsync([entry.Id], StreamKey);
+                }
+            }
         }
 
         #endregion

@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using MasterRedisAPI.Models;
 using StackExchange.Redis;
 
@@ -34,6 +36,17 @@ namespace MasterRedisAPI.Helper
         /// Redis connection options configured during application startup.
         /// </summary>
         private static RedisConnectionOptions? _options;
+
+        /// <summary>
+        /// JSON serialization options for Redis value storage.
+        /// </summary>
+        private static readonly JsonSerializerOptions _jsonOptions = new()
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+            PropertyNameCaseInsensitive = true,
+            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+            WriteIndented = false,
+        };
 
         #endregion
 
@@ -357,6 +370,96 @@ namespace MasterRedisAPI.Helper
         public async Task SetStringAsync(string key, string value, TimeSpan expiry)
         {
             await _db.StringSetAsync(key, value, expiry);
+        }
+
+        /// <summary>
+        /// Stores an object in Redis by serializing it to JSON.
+        /// </summary>
+        /// <typeparam name="T">Generic type of the object to store.</typeparam>
+        /// <param name="key">Redis key.</param>
+        /// <param name="value">Object to store.</param>
+        /// <param name="expiry">Expiration time span.</param>
+        /// <returns>True if successful, false otherwise.</returns>
+        public async Task<bool> SetAsync<T>(string key, T value, TimeSpan expiry)
+        {
+            byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(value, _jsonOptions);
+            return await _db.StringSetAsync(key, bytes, expiry);
+        }
+
+        /// <summary>
+        /// Retrieves and deserializes an object from Redis by key.
+        /// </summary>
+        /// <typeparam name="T">Generic type of the object to retrieve.</typeparam>
+        /// <param name="key">Redis key.</param>
+        /// <returns></returns>
+        public async Task<T?> GetAsync<T>(string key)
+        {
+            RedisValue value = await _db.StringGetAsync(key);
+
+            if (value.IsNullOrEmpty)
+                return default;
+
+            return JsonSerializer.Deserialize<T>((byte[])value!, _jsonOptions);
+        }
+
+        /// <summary>
+        /// Removes a key from Redis.
+        /// </summary>
+        /// <param name="key">Redis key.</param>
+        /// <returns></returns>
+        public async Task<bool> RemoveKeyAsync(string key)
+        {
+            return await _db.KeyDeleteAsync(key);
+        }
+
+        /// <summary>
+        /// Updates the expiration time of a Redis key.
+        /// </summary>
+        /// <param name="key">Redis key.</param>
+        /// <param name="expiry">Expiration time span.</param>
+        /// <returns></returns>
+        public async Task<bool> UpdateExpiryAsync(string key, TimeSpan expiry)
+        {
+            return await _db.KeyExpireAsync(key, expiry);
+        }
+
+        /// <summary>
+        /// Adds a value to a Redis hash by serializing it to JSON.
+        /// </summary>
+        /// <typeparam name="T">Generic type of the object to store.</typeparam>
+        /// <param name="hashKey">Redis hash key.</param>
+        /// <param name="key">Hash field key.</param>
+        /// <param name="value">Object to store.</param>
+        /// <returns></returns>
+        public async Task<bool> AddHashKeyAsync<T>(string hashKey, string key, T value)
+        {
+            byte[] bytes = JsonSerializer.SerializeToUtf8Bytes(value, _jsonOptions);
+            return await _db.HashSetAsync(hashKey, key, bytes);
+        }
+
+        /// <summary>
+        /// Removes a field from a Redis hash.
+        /// </summary>
+        /// <param name="hashKey">Redis hash key.</param>
+        /// <param name="key">Hash field key.</param>
+        /// <returns></returns>
+        public async Task<bool> RemoveHashKeyAsync(string hashKey, string key)
+        {
+            return await _db.HashDeleteAsync(hashKey, key);
+        }
+
+        /// <summary>
+        /// Retrieves all entries from a Redis stream.
+        /// </summary>
+        /// <param name="streamKey">Redis stream key.</param>
+        /// <returns></returns>
+        public async Task<StreamEntry[]> GetStreamEntriesAsync(
+            string streamKey,
+            string lastId,
+            int count = 1000
+        )
+        {
+            return await _db.StreamRangeAsync(streamKey, count: count, minId: lastId);
         }
 
         #endregion

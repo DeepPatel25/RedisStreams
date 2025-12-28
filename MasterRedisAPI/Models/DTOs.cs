@@ -43,3 +43,65 @@ public class StreamDataDto
     /// </summary>
     public string JsonValue { get; set; } = default!;
 }
+
+/// <summary>
+/// Add Value in Redis Stream DTO
+/// </summary>
+public class RedisStreamAddDTO
+{
+    /// <summary>
+    /// Session Id Value
+    /// </summary>
+    public string SessionId { get; set; } = default!;
+
+    /// <summary>
+    /// Hash Session Id Value
+    /// </summary>
+    public string HashSessionId { get; set; } = default!;
+
+    /// <summary>
+    /// Session Time Value
+    /// </summary>
+    public int SessionTime { get; set; }
+
+    /// <summary>
+    /// JSON Value
+    /// </summary>
+    public string JSONValue { get; set; } = default!;
+
+    /// <summary>
+    /// Redis Operation Type
+    /// </summary>
+    public EnmRedisOperation RedisOperation { get; set; }
+}
+
+/// <summary>
+/// Enumeration of Redis operations.
+/// </summary>
+public enum EnmRedisOperation
+{
+    /// <summary>
+    /// Add operation.
+    /// </summary>
+    Add = 1,
+
+    /// <summary>
+    /// Remove operation.
+    /// </summary>
+    Remove = 2,
+
+    /// <summary>
+    /// Update TTL operation.
+    /// </summary>
+    UpdateTTL = 3,
+
+    /// <summary>
+    /// Hash Add operation.
+    /// </summary>
+    HashAdd = 4,
+
+    /// <summary>
+    /// Hash Remove operation.
+    /// </summary>
+    HashRemove = 5,
+}
