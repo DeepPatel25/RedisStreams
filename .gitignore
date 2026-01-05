@@ -7,3 +7,5 @@ Properties/
 appsettings.Development.json
 
 .vscode/
+
+.DS_Store
