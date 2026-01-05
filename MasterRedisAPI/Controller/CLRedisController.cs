@@ -244,7 +244,7 @@ namespace MasterRedisAPI.Controller
 
                 foreach (StreamEntry entry in entries)
                 {
-                    lastId = entry.Id;
+                    lastId = GetNextStreamId(entry.Id);
 
                     var expiryValue = entry
                         .Values.FirstOrDefault(v => v.Name == "ExpiryTimeUtc")
@@ -410,6 +410,17 @@ namespace MasterRedisAPI.Controller
                     _ = await CacheManager.Cache.DeleteMessagesAsync([entry.Id], StreamKey);
                 }
             }
+        }
+
+        /// <summary>
+        /// Generates the next Redis stream ID based on the provided ID.
+        /// </summary>
+        /// <param name="id"></param>
+        /// <returns></returns>
+        private static string GetNextStreamId(string id)
+        {
+            var parts = id.Split('-');
+            return $"{parts[0]}-{long.Parse(parts[1]) + 1}";
         }
 
         #endregion
