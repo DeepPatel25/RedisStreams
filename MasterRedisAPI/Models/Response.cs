@@ -31,5 +31,5 @@ public class Response
     /// <remarks>
     /// Typically used for error messages or confirmation messages.
     /// </remarks>
-    public string Message { get; set; } = string.Empty;
+    public string Message { get; set; } = default!;
 }

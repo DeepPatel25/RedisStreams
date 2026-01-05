@@ -1,6 +1,7 @@
 using MasterRedisAPI.Helper;
 using MasterRedisAPI.Models;
 using Microsoft.AspNetCore.Mvc;
+using Newtonsoft.Json;
 using StackExchange.Redis;
 
 namespace MasterRedisAPI.Controller
@@ -35,62 +36,6 @@ namespace MasterRedisAPI.Controller
         #endregion
 
         #region Public APIs
-
-        /// <summary>
-        /// Adds a session entry to Redis cache and publishes it to the Redis stream.
-        /// </summary>
-        /// <param name="sessionId">Unique session or token identifier.</param>
-        /// <param name="validMinutes">Session validity duration in minutes.</param>
-        /// <param name="jsonValue">Serialized session data stored in Redis.</param>
-        /// <returns>
-        /// Returns the generated Redis stream message ID.
-        /// </returns>
-        /// <response code="200">Session successfully added to stream.</response>
-        [HttpPost]
-        public async Task<IActionResult> AddAsync(
-            string sessionId,
-            int validMinutes,
-            string jsonValue
-        )
-        {
-            // Calculate absolute expiry timestamp (Unix seconds)
-            long expiryTimeUtc = DateTimeOffset.UtcNow.AddMinutes(validMinutes).ToUnixTimeSeconds();
-
-            StreamDataModel data = new()
-            {
-                SessionId = sessionId,
-                ExpiryTimeUtc = expiryTimeUtc,
-                JsonValue = jsonValue,
-            };
-
-            // Convert model to Redis Stream entries
-            NameValueEntry[] entries =
-            [
-                new("SessionId", data.SessionId),
-                new("ExpiryTimeUtc", data.ExpiryTimeUtc.ToString()),
-                new("Value", data.JsonValue),
-            ];
-
-            // Store value in Redis cache with TTL
-            await CacheManager.Cache.SetStringAsync(
-                sessionId,
-                jsonValue,
-                TimeSpan.FromMinutes(validMinutes)
-            );
-
-            // Publish message to Redis Stream
-            string? messageId = await CacheManager.Cache.AddToStreamAsync(entries, StreamKey);
-
-            if (string.IsNullOrEmpty(messageId))
-            {
-                response.IsError = true;
-                response.Message = "Failed to add message to stream.";
-                return Ok(response);
-            }
-
-            response.DataModel = messageId;
-            return Ok(response);
-        }
 
         /// <summary>
         /// Creates a Redis consumer group for the stream if it does not already exist.
@@ -133,7 +78,11 @@ namespace MasterRedisAPI.Controller
         )
         {
             // 1️⃣ Fetch pending messages first
-            var pending = await CacheManager.Cache.GetPendingWithValuesAsync(
+            List<(
+                string MessageId,
+                StreamPendingMessageInfo Meta,
+                Dictionary<RedisValue, string> Values
+            )> pending = await CacheManager.Cache.GetPendingWithValuesAsync(
                 consumerGroup,
                 consumerName,
                 batchSize,
@@ -170,7 +119,7 @@ namespace MasterRedisAPI.Controller
             response.DataModel = messages
                 .Select(m =>
                 {
-                    var values = m.Values.ToDictionary(
+                    Dictionary<string, string> values = m.Values.ToDictionary(
                         x => x.Name.ToString(),
                         x => x.Value.ToString()
                     );
@@ -246,7 +195,7 @@ namespace MasterRedisAPI.Controller
                 {
                     lastId = GetNextStreamId(entry.Id);
 
-                    var expiryValue = entry
+                    RedisValue expiryValue = entry
                         .Values.FirstOrDefault(v => v.Name == "ExpiryTimeUtc")
                         .Value;
 
@@ -295,7 +244,7 @@ namespace MasterRedisAPI.Controller
                     // 🔴 Remove cache entry by key
                     case EnmRedisOperation.Remove:
                         await CacheManager.Cache.RemoveKeyAsync(redisStreamAddDTO.SessionId);
-                        await RemoveSessionIdValueFromStreamAsync(redisStreamAddDTO.SessionId);
+                        await RemoveSessionIdValueFromStreamAsync(redisStreamAddDTO);
 
                         break;
 
@@ -327,7 +276,7 @@ namespace MasterRedisAPI.Controller
                             redisStreamAddDTO.SessionId
                         );
 
-                        await RemoveSessionIdValueFromStreamAsync(redisStreamAddDTO.SessionId);
+                        await RemoveSessionIdValueFromStreamAsync(redisStreamAddDTO);
                         break;
 
                     default:
@@ -370,7 +319,7 @@ namespace MasterRedisAPI.Controller
                         .UtcNow.AddMinutes(redisStreamAddDTO.SessionTime)
                         .ToUnixTimeSeconds()
                 ),
-                new("Value", redisStreamAddDTO.JSONValue),
+                new("Value", JsonConvert.SerializeObject(redisStreamAddDTO)),
             ];
 
             _ = await CacheManager.Cache.AddToStreamAsync(entries, StreamKey);
@@ -381,9 +330,13 @@ namespace MasterRedisAPI.Controller
         /// </summary>
         /// <param name="sessionId">Session ID to remove from stream.</param>
         /// <returns></returns>
-        private static async Task RemoveSessionIdValueFromStreamAsync(string sessionId)
+        private static async Task RemoveSessionIdValueFromStreamAsync(
+            RedisStreamAddDTO redisStreamAddDTO
+        )
         {
             string lastId = "0-0";
+            bool anyDeleted = false;
+
             while (true)
             {
                 StreamEntry[] entries = await CacheManager.Cache.GetStreamEntriesAsync(
@@ -397,18 +350,40 @@ namespace MasterRedisAPI.Controller
 
                 foreach (StreamEntry entry in entries)
                 {
-                    lastId = entry.Id;
+                    lastId = GetNextStreamId(entry.Id);
 
                     RedisValue sessionIdValue = entry
                         .Values.FirstOrDefault(v => v.Name == "SessionId")
                         .Value;
 
-                    if (!sessionIdValue.HasValue || sessionIdValue.ToString() != sessionId)
+                    if (
+                        !sessionIdValue.HasValue
+                        || sessionIdValue.ToString() != redisStreamAddDTO.SessionId
+                    )
                         continue;
 
                     // 🔴 Matching entry → delete
                     _ = await CacheManager.Cache.DeleteMessagesAsync([entry.Id], StreamKey);
+                    anyDeleted = true;
                 }
+            }
+
+            // if any key is deleted then add new stream entry indicating deletion
+            if (anyDeleted)
+            {
+                NameValueEntry[] entries =
+                [
+                    new("SessionId", redisStreamAddDTO.SessionId),
+                    new(
+                        "ExpiryTimeUtc",
+                        DateTimeOffset
+                            .UtcNow.AddMinutes(redisStreamAddDTO.SessionTime)
+                            .ToUnixTimeSeconds()
+                    ),
+                    new("Value", JsonConvert.SerializeObject(redisStreamAddDTO)),
+                ];
+
+                _ = await CacheManager.Cache.AddToStreamAsync(entries, StreamKey);
             }
         }
 
@@ -419,7 +394,7 @@ namespace MasterRedisAPI.Controller
         /// <returns></returns>
         private static string GetNextStreamId(string id)
         {
-            var parts = id.Split('-');
+            string[] parts = id.Split('-');
             return $"{parts[0]}-{long.Parse(parts[1]) + 1}";
         }
 

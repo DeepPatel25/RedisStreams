@@ -92,6 +92,7 @@ public sealed class ChildStreamScheduler(
     /// <param name="token">Cancellation token.</param>
     private async Task PullAndProcessAsync(CancellationToken token)
     {
+        // Pull messages from master API
         Response? response = await InvokeAsync(
             $"{_options.PullEndpoint}"
                 + $"?consumerGroup={redisOptions.Value.ConsumerGroup}"
@@ -100,25 +101,90 @@ public sealed class ChildStreamScheduler(
             Method.Get
         );
 
+        // Exit if error or no data
         if (response?.IsError != false || response.DataModel == null)
             return;
 
+        // Deserialize stream messages
         List<StreamMessageDto<StreamDataDto>> messages =
             JsonConvert.DeserializeObject<List<StreamMessageDto<StreamDataDto>>>(
                 response.DataModel.ToString()!
             ) ?? [];
 
+        // Process each message
         if (messages.Count == 0)
             return;
 
+        // Iterate and process messages
         foreach (StreamMessageDto<StreamDataDto> msg in messages)
         {
-            // 🔹 Apply business logic (cache locally)
-            await CacheManager.Cache.SetStringAsync(
-                msg.Data.SessionId,
-                msg.Data.JsonValue,
-                TimeSpan.FromMinutes(5)
+            // Deserialize message payload
+            RedisStreamAddDTO? objRedisStreamAdd = JsonConvert.DeserializeObject<RedisStreamAddDTO>(
+                msg.Data.JsonValue.ToString()
             );
+
+            // Skip if deserialization fails
+            if (objRedisStreamAdd == null)
+                continue;
+
+            // Process based on operation type
+            switch (objRedisStreamAdd.RedisOperation)
+            {
+                // 🔹 Add new key
+                case EnmRedisOperation.Add:
+
+                    // 🔹 Set key with expiry
+                    await CacheManager.Cache.SetAsync(
+                        objRedisStreamAdd.SessionId,
+                        objRedisStreamAdd.JSONValue,
+                        TimeSpan.FromMinutes(objRedisStreamAdd.SessionTime)
+                    );
+                    break;
+
+                // 🔹 Remove key
+                case EnmRedisOperation.Remove:
+                    // 🔹 Delete key
+                    await CacheManager.Cache.RemoveKeyAsync(objRedisStreamAdd.SessionId);
+                    break;
+
+                // 🔹 Update TTL of existing key
+                case EnmRedisOperation.UpdateTTL:
+                    // 🔹 Update key expiry
+                    await CacheManager.Cache.UpdateExpiryAsync(
+                        objRedisStreamAdd.SessionId,
+                        TimeSpan.FromMinutes(objRedisStreamAdd.SessionTime)
+                    );
+                    break;
+
+                // 🔹 Hash operations
+                case EnmRedisOperation.HashAdd:
+
+                    // 🔹 Add or update hash key
+                    await CacheManager.Cache.AddHashKeyAsync(
+                        objRedisStreamAdd.HashSessionId,
+                        objRedisStreamAdd.SessionId,
+                        objRedisStreamAdd.JSONValue
+                    );
+                    break;
+
+                // 🔹 Remove hash key
+                case EnmRedisOperation.HashRemove:
+
+                    // 🔹 Delete hash key
+                    await CacheManager.Cache.RemoveHashKeyAsync(
+                        objRedisStreamAdd.HashSessionId,
+                        objRedisStreamAdd.SessionId
+                    );
+                    break;
+                default:
+                    // 🔹 Unknown operation
+                    _logger.LogWarning(
+                        "Unknown Redis operation in stream message | MessageId={MessageId} | Operation={Operation}",
+                        msg.MessageId,
+                        objRedisStreamAdd.RedisOperation
+                    );
+                    continue;
+            }
 
             // 🔹 Acknowledge message after successful processing
             await InvokeAsync(
@@ -128,6 +194,7 @@ public sealed class ChildStreamScheduler(
                 Method.Post
             );
 
+            // Log successful processing
             _logger.LogInformation(
                 "Stream message processed and acknowledged | MessageId={MessageId}",
                 msg.MessageId
@@ -147,7 +214,7 @@ public sealed class ChildStreamScheduler(
     /// <returns>
     /// Deserialized <see cref="Response"/> object or error response.
     /// </returns>
-    private async Task<Response?> InvokeAsync(string endpoint, Method method)
+    private static async Task<Response?> InvokeAsync(string endpoint, Method method)
     {
         Response response = new();
 

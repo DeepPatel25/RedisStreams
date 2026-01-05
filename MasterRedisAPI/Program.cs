@@ -6,14 +6,16 @@ WebApplicationBuilder builder = WebApplication.CreateBuilder(args);
 
 #region Services & Configuration
 
-// Add OpenAPI/Swagger services
-builder.Services.AddOpenApi();
+{
+    // Add OpenAPI/Swagger services
+    builder.Services.AddOpenApi();
 
-// Add MVC controllers
-builder.Services.AddControllers();
+    // Add MVC controllers
+    builder.Services.AddControllers();
 
-// Support command-line configuration
-builder.Configuration.AddCommandLine(args);
+    // Support command-line configuration
+    builder.Configuration.AddCommandLine(args);
+}
 
 #endregion
 
@@ -40,7 +42,7 @@ builder.Services.Configure<RedisNodeOptions>(options =>
 #region Master API Options
 
 // Configure master API options for child scheduler
-var masterApiOptions = new MasterApiOptions
+MasterApiOptions masterApiOptions = new()
 {
     BaseUrl = "http://localhost:5000/",
     ConsumerGroup = "child-group",
@@ -55,13 +57,6 @@ builder.Services.AddSingleton(masterApiOptions);
 #endregion
 
 #region HTTP Client for Child Scheduler
-
-// Add typed HttpClient for ChildStreamScheduler
-builder.Services.AddHttpClient<ChildStreamScheduler>(client =>
-{
-    Console.WriteLine(masterApiOptions.BaseUrl);
-    client.BaseAddress = new Uri(masterApiOptions.BaseUrl);
-});
 
 // Register the background hosted service
 builder.Services.AddHostedService<ChildStreamScheduler>();
@@ -87,9 +82,6 @@ if (app.Environment.IsDevelopment())
 
     app.UseDeveloperExceptionPage();
 }
-
-// Display Redis password from configuration (debug only)
-Console.WriteLine(builder.Configuration["redisPassword"]);
 
 #endregion
 
